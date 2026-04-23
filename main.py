@@ -12,15 +12,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 BCRA_API_URL = "https://api.bcra.gob.ar/CentralDeDeudores/v1.0/Deudas/"
 
-# --- LISTA DE PROXIES DEPURADA (Quitamos los que dieron error en tu log) ---
+# --- LISTA ULTRA-RÁPIDA (Filtramos solo los de mejor respuesta) ---
 PROXIES_LIST = [
-    "socks5h://fonnotou:0k9ppmka6543@82.27.245.223:6546",
-    "socks5h://fonnotou:0k9ppmka6543@147.124.198.200:6059",
-    "socks5h://fonnotou:0k9ppmka6543@59.152.60.171:6111",
-    "socks5h://fonnotou:0k9ppmka6543@108.165.69.64:6026",
-    "socks5h://fonnotou:0k9ppmka6543@154.29.25.170:7181",
-    "socks5h://fonnotou:0k9ppmka6543@45.39.5.210:6648",
-    "socks5h://fonnotou:0k9ppmka6543@82.22.211.242:6050"
+    "socks5h://fonnotou:0k9ppmka6543@147.124.198.200:6059", # USA
+    "socks5h://fonnotou:0k9ppmka6543@108.165.69.64:6026",  # Países Bajos
+    "socks5h://fonnotou:0k9ppmka6543@45.39.5.210:6648",    # Canadá
+    "socks5h://fonnotou:0k9ppmka6543@82.22.211.242:6050"   # Reino Unido
 ]
 
 def consultar_situacion_bcra(cuit_cuil):
@@ -33,30 +30,28 @@ def consultar_situacion_bcra(cuit_cuil):
         'Connection': 'close' 
     }
 
-    # Reintentamos 3 veces pero con timeout muy corto para no colgar a ManyChat
-    for intento in range(3):
-        proxy_url = random.choice(PROXIES_LIST)
-        proxies = {"http": proxy_url, "https": proxy_url}
+    # Un solo intento con un proxy al azar para responder ANTES que ManyChat corte
+    proxy_url = random.choice(PROXIES_LIST)
+    proxies = {"http": proxy_url, "https": proxy_url}
+    
+    try:
+        logging.info(f"Conectando rápido vía: {proxy_url}")
+        # Timeout estricto de 7 segundos. Si no responde, vamos directo al asesor.
+        response = requests.get(url, headers=headers, proxies=proxies, timeout=7, verify=False)
         
-        try:
-            logging.info(f"Intento {intento+1} con: {proxy_url}")
-            # Bajamos a 6 segundos. Si no responde, saltamos al siguiente proxy rápido.
-            response = requests.get(url, headers=headers, proxies=proxies, timeout=6, verify=False)
+        if response.status_code == 200:
+            data = response.json()
+            results = data.get('results', data)
+            periodos = results.get('periodos', [])
+            if not periodos: return 1
             
-            if response.status_code == 200:
-                data = response.json()
-                results = data.get('results', data)
-                periodos = results.get('periodos', [])
-                if not periodos: return 1
-                
-                peor = 1
-                for entidad in periodos[0].get('entidades', []):
-                    sit = int(entidad.get('situacion', 1))
-                    if sit > peor: peor = sit
-                return peor
-        except Exception as e:
-            logging.error(f"Fallo temporal en {proxy_url}: {e}")
-            continue 
+            peor = 1
+            for entidad in periodos[0].get('entidades', []):
+                sit = int(entidad.get('situacion', 1))
+                if sit > peor: peor = sit
+            return peor
+    except Exception as e:
+        logging.error(f"Fallo en proxy: {e}")
             
     return "error_conexion"
 
@@ -67,6 +62,7 @@ async def webhook_manychat(request: Request):
         cuil = data.get("cuil")
         res = consultar_situacion_bcra(cuil)
 
+        # Usamos los textos de Crédito Denis
         if res == 1:
             texto = "✅ ¡Buenas noticias! Tu perfil califica. Un asesor de Crédito Denis se contactará contigo pronto."
         elif isinstance(res, int) and res > 1:

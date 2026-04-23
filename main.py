@@ -5,6 +5,7 @@ import logging
 import urllib3
 from fastapi import FastAPI, Request
 
+# Desactivar advertencias de seguridad
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = FastAPI()
@@ -12,7 +13,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 BCRA_API_URL = "https://api.bcra.gob.ar/CentralDeDeudores/v1.0/Deudas/"
 
-# --- LISTA CON FORMATO SOCKS5H (El más seguro para Webshare) ---
+# --- LISTA SOCKS5H (Tu lista de fotos) ---
 PROXIES_LIST = [
     "socks5h://fonnotou:0k9ppmka6543@82.27.245.223:6546",
     "socks5h://fonnotou:0k9ppmka6543@147.124.198.200:6059",
@@ -32,18 +33,17 @@ def consultar_situacion_bcra(cuit_cuil):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'application/json',
-        'Connection': 'close' # Forzamos cierre para evitar saturar el proxy
+        'Connection': 'close'
     }
 
-    # Intentamos 3 veces con proxies distintos
     for intento in range(3):
         proxy_url = random.choice(PROXIES_LIST)
         proxies = {"http": proxy_url, "https": proxy_url}
         
         try:
-            logging.info(f"Probando Intento {intento + 1} vía {proxy_url}")
-            # Timeout un poco más largo porque SOCKS5 puede tardar un poco más en conectar
-            response = requests.get(url, headers=headers, proxies=proxies, timeout=20, verify=False)
+            logging.info(f"Intento {intento+1}: Conectando vía {proxy_url}")
+            # Aumentamos timeout a 25 porque SOCKS5 es más seguro pero a veces más lento
+            response = requests.get(url, headers=headers, proxies=proxies, timeout=25, verify=False)
             
             if response.status_code == 200:
                 data = response.json()
@@ -60,7 +60,7 @@ def consultar_situacion_bcra(cuit_cuil):
                 return 1
                 
         except Exception as e:
-            logging.error(f"Fallo en {proxy_url}: {e}")
+            logging.error(f"Error técnico en proxy: {e}")
             continue 
             
     return "error_conexion"
@@ -80,5 +80,5 @@ async def webhook_manychat(request: Request):
             texto = "⚠️ Estamos teniendo inconvenientes para consultar con el BCRA. Te derivo con un asesor para que te atienda personalmente ahora mismo."
 
         return {"version": "v2", "content": {"messages": [{"text": texto}]}}
-    except Exception as e:
+    except:
         return {"version": "v2", "content": {"messages": [{"text": "⏳ Demora técnica. Reintentá en un momento."}]}}

@@ -5,7 +5,6 @@ import logging
 import urllib3
 from fastapi import FastAPI, Request
 
-# Desactivar advertencias de seguridad
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = FastAPI()
@@ -13,7 +12,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 BCRA_API_URL = "https://api.bcra.gob.ar/CentralDeDeudores/v1.0/Deudas/"
 
-# --- LISTA SOCKS5H (Tu lista de fotos) ---
+# Mantenemos tu lista SOCKS5H
 PROXIES_LIST = [
     "socks5h://fonnotou:0k9ppmka6543@82.27.245.223:6546",
     "socks5h://fonnotou:0k9ppmka6543@147.124.198.200:6059",
@@ -30,37 +29,43 @@ def consultar_situacion_bcra(cuit_cuil):
     cuit_clean = re.sub(r'\D', '', str(cuit_cuil))
     url = f"{BCRA_API_URL}{cuit_clean}"
     
+    # HEADERS HUMANIZADOS (Clave para que el BCRA no sospeche)
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json',
-        'Connection': 'close'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'es-ES,es;q=0.9',
+        'Referer': 'https://www.bcra.gob.ar/BCRAyVos/Situacion_Crediticia.asp',
+        'Origin': 'https://www.bcra.gob.ar',
+        'Connection': 'keep-alive'
     }
 
-    for intento in range(3):
+    # Intentamos hasta 5 veces con proxies diferentes
+    for intento in range(5):
         proxy_url = random.choice(PROXIES_LIST)
         proxies = {"http": proxy_url, "https": proxy_url}
         
         try:
-            logging.info(f"Intento {intento+1}: Conectando vía {proxy_url}")
-            # Aumentamos timeout a 25 porque SOCKS5 es más seguro pero a veces más lento
-            response = requests.get(url, headers=headers, proxies=proxies, timeout=25, verify=False)
+            logging.info(f"Intento {intento+1} con: {proxy_url}")
+            # Usamos una sesión para manejar mejor las cookies si el BCRA las pide
+            session = requests.Session()
+            response = session.get(url, headers=headers, proxies=proxies, timeout=15, verify=False)
             
             if response.status_code == 200:
                 data = response.json()
                 results = data.get('results', data)
                 periodos = results.get('periodos', [])
                 if not periodos: return 1
+                
                 peor = 1
                 for entidad in periodos[0].get('entidades', []):
                     sit = int(entidad.get('situacion', 1))
                     if sit > peor: peor = sit
                 return peor
             
-            if response.status_code == 404:
-                return 1
+            logging.warning(f"Respuesta no exitosa ({response.status_code}) en intento {intento+1}")
                 
         except Exception as e:
-            logging.error(f"Error técnico en proxy: {e}")
+            logging.error(f"Error en proxy {proxy_url}: {e}")
             continue 
             
     return "error_conexion"

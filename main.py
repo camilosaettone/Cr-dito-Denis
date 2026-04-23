@@ -67,7 +67,7 @@ async def webhook_manychat(request: Request):
         elif isinstance(res, int) and res > 1:
             texto = f"❌ Lo sentimos, tu situación actual (Nivel {res}) no nos permite avanzar con el préstamo ahora."
         else:
-            texto = "⚠️ El sistema del Banco Central está saturado. Para agilizar, por favor envianos una CAPTURA DE PANTALLA de tu situación crediticia y un asesor te atenderá."
+            texto = "⚠️ El sistema del Banco Central está saturado. un asesor te atenderá en breve ."
 
         return {"version": "v2", "content": {"messages": [{"text": texto}]}}
     except:

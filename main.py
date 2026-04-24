@@ -4,6 +4,8 @@ import re
 import logging
 import urllib3
 from fastapi import FastAPI, Request
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -12,32 +14,38 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 BCRA_API_URL = "https://api.bcra.gob.ar/CentralDeDeudores/v1.0/Deudas/"
 
-# --- LISTA ULTRA-RÁPIDA (Filtramos solo los de mejor respuesta) ---
+# Lista de proxies más estables según tus pruebas
 PROXIES_LIST = [
-    "socks5h://fonnotou:0k9ppmka6543@147.124.198.200:6059", # USA
-    "socks5h://fonnotou:0k9ppmka6543@108.165.69.64:6026",  # Países Bajos
-    "socks5h://fonnotou:0k9ppmka6543@45.39.5.210:6648",    # Canadá
-    "socks5h://fonnotou:0k9ppmka6543@82.22.211.242:6050"   # Reino Unido
+    "socks5h://fonnotou:0k9ppmka6543@147.124.198.200:6059",
+    "socks5h://fonnotou:0k9ppmka6543@108.165.69.64:6026",
+    "socks5h://fonnotou:0k9ppmka6543@45.39.5.210:6648",
+    "socks5h://fonnotou:0k9ppmka6543@82.22.211.242:6050",
+    "socks5h://fonnotou:0k9ppmka6543@154.29.25.170:7181"
 ]
 
 def consultar_situacion_bcra(cuit_cuil):
     cuit_clean = re.sub(r'\D', '', str(cuit_cuil))
     url = f"{BCRA_API_URL}{cuit_clean}"
     
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-        'Connection': 'close' 
-    }
-
-    # Un solo intento con un proxy al azar para responder ANTES que ManyChat corte
     proxy_url = random.choice(PROXIES_LIST)
     proxies = {"http": proxy_url, "https": proxy_url}
     
+    # Configuración de reintentos automáticos a nivel de red
+    session = requests.Session()
+    retries = Retry(total=2, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
+    session.mount('https://', HTTPAdapter(max_retries=retries))
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Referer': 'https://www.bcra.gob.ar/',
+        'Connection': 'close'
+    }
+
     try:
-        logging.info(f"Conectando rápido vía: {proxy_url}")
-        # Timeout estricto de 7 segundos. Si no responde, vamos directo al asesor.
-        response = requests.get(url, headers=headers, proxies=proxies, timeout=7, verify=False)
+        logging.info(f"🚀 Consultando vía: {proxy_url}")
+        # Aumentamos un poco el timeout para darle aire a la sesión
+        response = session.get(url, headers=headers, proxies=proxies, timeout=10, verify=False)
         
         if response.status_code == 200:
             data = response.json()
@@ -50,8 +58,9 @@ def consultar_situacion_bcra(cuit_cuil):
                 sit = int(entidad.get('situacion', 1))
                 if sit > peor: peor = sit
             return peor
+            
     except Exception as e:
-        logging.error(f"Fallo en proxy: {e}")
+        logging.error(f"❌ Error crítico en {proxy_url}: {e}")
             
     return "error_conexion"
 
@@ -62,7 +71,6 @@ async def webhook_manychat(request: Request):
         cuil = data.get("cuil")
         res = consultar_situacion_bcra(cuil)
 
-        # Usamos los textos de Crédito Denis
         if res == 1:
             texto = "✅ ¡Buenas noticias! Tu perfil califica. Un asesor de Crédito Denis se contactará contigo pronto."
         elif isinstance(res, int) and res > 1:

@@ -1,83 +1,134 @@
-import random
-import requests
 import re
 import logging
-import urllib3
+import requests
 from fastapi import FastAPI, Request
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from functools import lru_cache
 
 app = FastAPI()
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 BCRA_API_URL = "https://api.bcra.gob.ar/CentralDeDeudores/v1.0/Deudas/"
 
-# Lista de proxies más estables según tus pruebas
-PROXIES_LIST = [
-    "socks5h://fonnotou:0k9ppmka6543@147.124.198.200:6059",
-    "socks5h://fonnotou:0k9ppmka6543@108.165.69.64:6026",
-    "socks5h://fonnotou:0k9ppmka6543@45.39.5.210:6648",
-    "socks5h://fonnotou:0k9ppmka6543@82.22.211.242:6050",
-    "socks5h://fonnotou:0k9ppmka6543@154.29.25.170:7181"
-]
+# ---------------------------
+# Configuración de sesión HTTP
+# ---------------------------
+def crear_sesion():
+    session = requests.Session()
 
+    retries = Retry(
+        total=5,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"]
+    )
+
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("https://", adapter)
+
+    return session
+
+# ---------------------------
+# Consulta al BCRA
+# ---------------------------
 def consultar_situacion_bcra(cuit_cuil):
     cuit_clean = re.sub(r'\D', '', str(cuit_cuil))
     url = f"{BCRA_API_URL}{cuit_clean}"
-    
-    proxy_url = random.choice(PROXIES_LIST)
-    proxies = {"http": proxy_url, "https": proxy_url}
-    
-    # Configuración de reintentos automáticos a nivel de red
-    session = requests.Session()
-    retries = Retry(total=2, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
-    session.mount('https://', HTTPAdapter(max_retries=retries))
-    
+
+    session = crear_sesion()
+
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-        'Referer': 'https://www.bcra.gob.ar/',
-        'Connection': 'close'
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+        "Origin": "https://www.bcra.gob.ar",
+        "Referer": "https://www.bcra.gob.ar/"
     }
 
     try:
-        logging.info(f"🚀 Consultando vía: {proxy_url}")
-        # Aumentamos un poco el timeout para darle aire a la sesión
-        response = session.get(url, headers=headers, proxies=proxies, timeout=10, verify=False)
-        
-        if response.status_code == 200:
-            data = response.json()
-            results = data.get('results', data)
-            periodos = results.get('periodos', [])
-            if not periodos: return 1
-            
-            peor = 1
-            for entidad in periodos[0].get('entidades', []):
-                sit = int(entidad.get('situacion', 1))
-                if sit > peor: peor = sit
-            return peor
-            
-    except Exception as e:
-        logging.error(f"❌ Error crítico en {proxy_url}: {e}")
-            
-    return "error_conexion"
+        logging.info(f"Consultando BCRA: {cuit_clean}")
 
+        response = session.get(url, headers=headers, timeout=10)
+
+        logging.info(f"Status code: {response.status_code}")
+
+        if response.status_code != 200:
+            logging.error(f"Respuesta no válida: {response.text}")
+            return "error_conexion"
+
+        data = response.json()
+
+        results = data.get('results', data)
+        periodos = results.get('periodos', [])
+
+        if not periodos:
+            return 1
+
+        peor = 1
+
+        for entidad in periodos[0].get('entidades', []):
+            sit = int(entidad.get('situacion', 1))
+            if sit > peor:
+                peor = sit
+
+        return peor
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error de red: {e}")
+        return "error_conexion"
+    except Exception as e:
+        logging.error(f"Error inesperado: {e}")
+        return "error_conexion"
+
+# ---------------------------
+# Cache simple (evita bloqueos)
+# ---------------------------
+@lru_cache(maxsize=1000)
+def consultar_cacheado(cuit):
+    return consultar_situacion_bcra(cuit)
+
+# ---------------------------
+# Endpoint webhook
+# ---------------------------
 @app.post("/webhook-cuil")
 async def webhook_manychat(request: Request):
     try:
         data = await request.json()
         cuil = data.get("cuil")
-        res = consultar_situacion_bcra(cuil)
+
+        if not cuil:
+            return {
+                "version": "v2",
+                "content": {"messages": [{"text": "⚠️ No se recibió un CUIL válido."}]}
+            }
+
+        res = consultar_cacheado(cuil)
 
         if res == 1:
-            texto = "✅ ¡Buenas noticias! Tu perfil califica. Un asesor de Crédito Denis se contactará contigo pronto."
+            texto = "✅ ¡Buenas noticias! Tu perfil califica. Un asesor se contactará contigo pronto."
         elif isinstance(res, int) and res > 1:
-            texto = f"❌ Lo sentimos, tu situación actual (Nivel {res}) no nos permite avanzar con el préstamo ahora."
+            texto = f"❌ Tu situación actual (Nivel {res}) no permite avanzar con el préstamo en este momento."
         else:
-            texto = "⚠️ Estamos teniendo inconvenientes para consultar con el BCRA. Te derivo con un asesor para que te atienda personalmente ahora mismo."
+            texto = "⚠️ No pudimos consultar el BCRA. Te derivamos con un asesor."
 
-        return {"version": "v2", "content": {"messages": [{"text": texto}]}}
-    except:
-        return {"version": "v2", "content": {"messages": [{"text": "⏳ Tenemos una demora técnica. Un asesor te atenderá en instantes."}]}}
+        return {
+            "version": "v2",
+            "content": {
+                "messages": [
+                    {"text": texto}
+                ]
+            }
+        }
+
+    except Exception as e:
+        logging.error(f"Error en webhook: {e}")
+
+        return {
+            "version": "v2",
+            "content": {
+                "messages": [
+                    {"text": "⏳ Tenemos una demora técnica. Un asesor te atenderá en instantes."}
+                ]
+            }
+        }

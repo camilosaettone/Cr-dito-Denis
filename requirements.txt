@@ -1,4 +1,4 @@
 fastapi
-requests
 uvicorn
-pysocks
+requests
+urllib3
